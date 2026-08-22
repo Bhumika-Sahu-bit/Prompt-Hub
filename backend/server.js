@@ -2,6 +2,9 @@ const express = require('express');
 const mongoose = require('mongoose');
 require('dotenv').config();
 
+//redis
+const { redisClient, connectRedis } = require('./config/redis');
+
 const app = express();
 
 // ✅ CORS PERFECT - Handle ALL methods + preflight
@@ -27,6 +30,10 @@ console.log('🚀 Starting server...');
 mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/prompthub')
   .then(() => console.log('✅ MongoDB Connected'))
   .catch(err => console.log('❌ MongoDB Error:', err.message));
+
+
+//Redis connection
+connectRedis();
 
 // Schemas
 const promptSchema = new mongoose.Schema({
@@ -55,9 +62,39 @@ const User = mongoose.model('User', userSchema);
 // Routes
 app.get('/api/prompts', async (req, res) => {
   try {
+    const cacheKey = 'prompts:latest';
+
+    //1.redis me check karo
+    try {
+    const cachedPrompts = await redisClient.get(cacheKey);
+
+    //2.agar redis me data mil gaya
+    if(cachedPrompts) {
+      console.log('⚡ Redis HIT');
+      return res.json(JSON.parse(cachedPrompts));
+    } 
+
+    //3. Redis me data nahi mila
+    console.log('🐢 Redis MISS - Fetching from MongoDB');
+  } catch (redisError) {
+    console.log('⚠️ Redis unavailable, using MongoDB');
+  }
+
+
     const prompts = await Prompt.find().sort({ createdAt: -1 }).limit(20);
     
+    //4. MongoDB ka data redis me store karo
+    await redisClient.setEx(
+      cacheKey,
+      120,
+      JSON.stringify(prompts)
+    );
+
+     console.log('💾 Prompts cached in Redis for 60 seconds');
+
+     //5.client ko response do
     res.json(prompts);
+
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -79,7 +116,17 @@ app.post('/api/prompts', async (req, res) => {
     const prompt = new Prompt(data);
     await prompt.save();
 
+
     console.log('✅ Saved:', prompt._id);
+
+    //🗑️ Invalidate prompts cache
+    try {
+    await redisClient.del('prompts:latest');
+    console.log('🗑️ Redis cache deleted');
+    } catch (redisError) {
+  console.log('⚠️ Redis unavailable - cache deletion skipped');
+}
+
     res.status(201).json(prompt);
     console.log(req.body);
   } catch (error) {
@@ -119,7 +166,30 @@ app.patch('/api/prompts/:id/like', async (req, res) => {
     if (user && !user.likedPrompts.includes(req.params.id)) {
       user.likedPrompts.push(req.params.id);
       await user.save();
+
+       // 🗑️ Invalidate favorites cache
+try {
+  await redisClient.del(`favorites:${userId}`);
+  console.log('🗑️ Favorites cache deleted');
+} catch (redisError) {
+  console.log('⚠️ Redis unavailable - favorites cache not deleted');
+}
     }
+
+    //update redis cache for this prompt
+    const promptCacheKey = `prompt:${req.params.id}`;
+
+    try {
+    await redisClient.setEx(
+      promptCacheKey,
+      60,
+      JSON.stringify(prompt)
+    )
+
+    console.log('⚡ Redis prompt cache updated');
+    } catch (redisError) {
+  console.log('⚠️ Redis unavailable - prompt cache not updated');
+}
 
     console.log('✅ LIKE SUCCESS:', prompt.likes);
     res.json(prompt);
@@ -138,10 +208,47 @@ app.get('/api/users/favorites', async (req, res) => {
 
     const decoded = Buffer.from(token, 'base64').toString();
     const [userId] = decoded.split(':');
+
+    //Redis cache key for this user
+    const cacheKey = `favorites:${userId}`;
+    let cachedFavorites = null;
+
+    try {
+    //1️⃣ Check Redis first
+    cachedFavorites = await redisClient.get(cacheKey);
+    } catch (redisError) {
+  console.log('⚠️ Redis unavailable - fetching favorites from MongoDB');
+}
+
+     if (cachedFavorites) {
+      console.log('⚡ Favorites Redis HIT');
+
+      return res.json(JSON.parse(cachedFavorites));
+    }
+
+    // 2️⃣ Redis MISS → MongoDB
+    console.log('🐢 Favorites Redis MISS - Fetching from MongoDB');
+
     const user = await User.findById(userId).populate('likedPrompts');
 
     if (!user) return res.status(401).json({ error: 'User not found' });
     
+    const favorites = user.likedPrompts;
+
+    // 3️⃣ Store favorites in Redis for 60 seconds
+   try {
+  await redisClient.setEx(
+    cacheKey,
+    60,
+    JSON.stringify(favorites)
+  );
+
+  console.log('💾 Favorites cached in Redis for 60 seconds');
+
+} catch (redisError) {
+  console.log('⚠️ Could not cache favorites in Redis');
+}
+
     console.log('⭐ Favorites fetched:', user.likedPrompts.length);
     res.json(user.likedPrompts);
   } catch (error) {
