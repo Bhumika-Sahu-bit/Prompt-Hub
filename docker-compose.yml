@@ -1,0 +1,18 @@
+services:
+
+  backend:
+    build: ./backend
+    container_name: prompt-hub-backend
+    ports:
+      - "5000:5000"
+    env_file:
+      - ./backend/.env
+
+  
+  frontend:
+    build: ./frontend
+    container_name: prompt-hub-frontend
+    ports:
+      - "3001:80"
+    depends_on:
+      - backend
