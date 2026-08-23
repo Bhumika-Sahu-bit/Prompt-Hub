@@ -11,12 +11,7 @@ The project is built using the **MERN Stack** with **Redis caching**, authentica
 ## 🌐 Live Demo
 
 🔗 **Frontend:**
-https://prompt-hub.vercel.app
-
-🔗 **Backend API:**
-https://prompt-hub-lxak.onrender.com
-
-> Replace the frontend URL above with your current Vercel URL if it is different.
+https://prompt-hub-xi-umber.vercel.app/
 
 ---
 
